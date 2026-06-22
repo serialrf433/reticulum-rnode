@@ -36,6 +36,13 @@ static bool s_online = false;
 // RNode splits packets > 254 bytes into two LoRa frames with the
 // same header byte (upper nibble = sequence, lower bit 0 = FLAG_SPLIT).
 // We buffer the first half and join when the second half arrives.
+//
+// We deliberately do NOT time out a buffered first half on a wall
+// clock. At slow data rates a single 255-byte frame can take many
+// seconds of airtime (e.g. ~18 s at SF12/BW62.5), so the second half
+// legitimately arrives long after the first. The buffered half is
+// instead replaced when a new packet with a different sequence (or a
+// non-split packet) arrives — matching upstream RNode_Firmware.
 static constexpr uint8_t FLAG_SPLIT = 0x01;
 static constexpr size_t  SINGLE_MTU = 255;   // max LoRa frame (header + 254 payload)
 static constexpr size_t  MAX_PAYLOAD = 508;   // max reassembled Reticulum payload
@@ -43,7 +50,6 @@ static constexpr size_t  MAX_PAYLOAD = 508;   // max reassembled Reticulum paylo
 static uint8_t  s_split_buf[512];    // buffered first-half payload (no header)
 static size_t   s_split_len = 0;     // bytes in split_buf
 static uint8_t  s_split_seq = 0xFF;  // sequence nibble of first half (0xFF = none)
-static uint32_t s_split_ms  = 0;     // millis() when first half arrived
 
 // ISR flag set by RadioLib's packet-received callback. Volatile
 // because it's written from interrupt context and read from loop().
@@ -191,13 +197,6 @@ void stop() {
 }
 
 int read_pending(uint8_t* buf, size_t bufsize) {
-    // Expire stale split-packet first half (500ms timeout)
-    if (s_split_seq != 0xFF && (millis() - s_split_ms) > 500) {
-        Serial.println("Radio: split timeout, discarding first half");
-        s_split_seq = 0xFF;
-        s_split_len = 0;
-    }
-
     if (!s_rx_flag) return 0;
     s_rx_flag = false;
 
@@ -256,7 +255,6 @@ int read_pending(uint8_t* buf, size_t bufsize) {
             memcpy(s_split_buf, payload, payload_len);
             s_split_len = payload_len;
             s_split_seq = seq;
-            s_split_ms  = millis();
             Serial.println("  (buffered)");
             return 0;  // not ready yet
         }
@@ -296,12 +294,17 @@ int read_pending(uint8_t* buf, size_t bufsize) {
             memcpy(s_split_buf, payload, payload_len);
             s_split_len = payload_len;
             s_split_seq = seq;
-            s_split_ms  = millis();
             return 0;
         }
     }
 
-    // Non-split packet — deliver directly
+    // Non-split packet — deliver directly. Drop any half-buffered split
+    // first half: a plain packet means the matching second half is no
+    // longer coming (matches upstream RNode_Firmware).
+    if (s_split_seq != 0xFF) {
+        s_split_seq = 0xFF;
+        s_split_len = 0;
+    }
     if (payload_len > bufsize) payload_len = bufsize;
     memcpy(buf, payload, payload_len);
 
