@@ -85,6 +85,7 @@ const BOARDS = {
     0x53: { name: "XIAO nRF52840",   product: 0x19, model: 0x19 },
     0x54: { name: "Heltec T114",     product: 0x20, model: 0x20 },
     0x55: { name: "RAK3401 1W",      product: 0x21, model: 0x21 },
+    0x44: { name: "T-Echo",          product: 0x15, model: 0x17 },
 };
 
 // ---- KISS framing helpers ----------------------------------------

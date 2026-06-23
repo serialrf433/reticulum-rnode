@@ -13,6 +13,7 @@ The host runs the Reticulum stack (via `rnsd`, Sideband, or NomadNet); this firm
 | Seeed XIAO nRF52840 Kit | Wio-SX1262 | Untested |
 | Heltec Mesh Node T114 | SX1262 integrated | Untested |
 | RAK3401 1-Watt | SX1262 + 1W PA | Untested |
+| LilyGO T-Echo | SX1262 integrated | Untested — pins from Meshtastic, not bench-validated |
 
 ## Building
 
@@ -25,6 +26,7 @@ pio run -e RAK4631
 pio run -e XIAO_nRF52840
 pio run -e Heltec_T114
 pio run -e RAK3401
+pio run -e T-Echo
 
 # Flash via nrfutil (USB bootloader)
 pio run -e Faketec -t upload --upload-port COMxx
