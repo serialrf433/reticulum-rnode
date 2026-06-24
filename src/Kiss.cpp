@@ -105,7 +105,9 @@ static constexpr uint16_t ADDR_FW_HASH   = 0xB0;  // 32 bytes
 static constexpr size_t TX_QUEUE_SIZE = 512;
 static uint8_t  s_tx_queue[TX_QUEUE_SIZE];
 static size_t   s_tx_queue_len = 0;
-static bool     s_tx_busy = false;
+// Full payload length of the packet the radio is currently airing, so its
+// airtime can be accounted when the async transmission completes.
+static size_t   s_tx_inflight_len = 0;
 
 // ---- Transport abstraction ----------------------------------------
 // Tracks which transport (Serial or BLE) sent the last command so
@@ -271,7 +273,7 @@ static void status_tick() {
     if (!s_radio_on) return;
     uint32_t now = millis();
 
-    if (!s_tx_busy && (now - s_last_sample_ms) >= SAMPLE_INTERVAL_MS) {
+    if (!rlr::radio::tx_busy() && (now - s_last_sample_ms) >= SAMPLE_INTERVAL_MS) {
         uint32_t dt = now - s_last_sample_ms;
         s_last_sample_ms = now;
         float rssi = rlr::radio::read_rssi();
@@ -378,7 +380,10 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
     switch (cmd) {
 
     case CMD_DATA:
-        // TX packet via radio
+        // TX packet via radio. Non-blocking: hand the packet to the radio and
+        // let the poll()-driven state machine air it; completion (CMD_READY +
+        // airtime accounting) is handled in tx_service() so the main loop keeps
+        // servicing BLE during the transmission.
         if (s_radio_on && len > 0) {
             // Airtime cap (CMD_ST_ALOCK/CMD_LT_ALOCK) — refuse to transmit
             // while over budget and report backpressure (SPEC.md §8.5.1).
@@ -386,28 +391,15 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
                 send_byte(CMD_ERROR, ERROR_QUEUE_FULL);
                 break;
             }
-            if (s_tx_busy) {
-                // Radio is busy — queue the packet if the slot is free
-                if (s_tx_queue_len == 0 && len <= TX_QUEUE_SIZE) {
-                    memcpy(s_tx_queue, data, len);
-                    s_tx_queue_len = len;
-                } else {
-                    send_byte(CMD_ERROR, ERROR_QUEUE_FULL);
-                }
-            } else {
-                s_tx_busy = true;
+            if (rlr::radio::enqueue_tx(data, len)) {
+                s_tx_inflight_len = len;
                 rlr::led::on();
-                int n = rlr::radio::transmit(data, len);
-                rlr::led::off();
-                s_tx_busy = false;
-                if (n > 0) {
-                    s_tx_count++;
-                    record_tx_airtime(len);
-                } else {
-                    send_byte(CMD_ERROR, ERROR_TXFAILED);
-                }
-                // Signal ready for next packet
-                send_byte(CMD_READY, s_tx_queue_len == 0 ? 0x01 : 0x00);
+            } else if (s_tx_queue_len == 0 && len <= TX_QUEUE_SIZE) {
+                // Radio busy — park one packet in the single-slot queue.
+                memcpy(s_tx_queue, data, len);
+                s_tx_queue_len = len;
+            } else {
+                send_byte(CMD_ERROR, ERROR_QUEUE_FULL);
             }
         }
         break;
@@ -590,7 +582,7 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
         break;
 
     case CMD_READY:
-        send_byte(CMD_READY, (!s_tx_busy && s_tx_queue_len == 0) ? 0x01 : 0x00);
+        send_byte(CMD_READY, (!rlr::radio::tx_busy() && s_tx_queue_len == 0) ? 0x01 : 0x00);
         break;
 
     case CMD_BLINK:
@@ -860,26 +852,28 @@ void tick() {
     status_tick();
 }
 
-void drain_tx_queue() {
-    if (s_tx_queue_len == 0 || s_tx_busy || !s_radio_on) return;
-    // Hold the queued packet while over the airtime budget (backpressure).
-    if (airtime_cap_blocks_tx()) return;
+// Called from loop() after radio::poll(). Finalizes a completed async TX
+// (airtime accounting + CMD_READY flow control) and starts any queued packet.
+void tx_service() {
+    if (!s_radio_on) return;
 
-    size_t len = s_tx_queue_len;
-    s_tx_busy = true;
-    rlr::led::on();
-    int n = rlr::radio::transmit(s_tx_queue, len);
-    rlr::led::off();
-    s_tx_busy = false;
-    s_tx_queue_len = 0;
-
-    if (n > 0) {
+    // A transmission just finished: account it and tell the host we're ready.
+    if (rlr::radio::tx_just_completed()) {
+        rlr::led::off();
         s_tx_count++;
-        record_tx_airtime(len);
-    } else {
-        send_byte(CMD_ERROR, ERROR_TXFAILED);
+        record_tx_airtime(s_tx_inflight_len);
+        s_tx_inflight_len = 0;
+        send_byte(CMD_READY, s_tx_queue_len == 0 ? 0x01 : 0x00);
     }
-    send_byte(CMD_READY, 0x01);
+
+    // Start a queued packet once the radio is idle and within the airtime cap.
+    if (s_tx_queue_len > 0 && !rlr::radio::tx_busy() && !airtime_cap_blocks_tx()) {
+        if (rlr::radio::enqueue_tx(s_tx_queue, s_tx_queue_len)) {
+            s_tx_inflight_len = s_tx_queue_len;
+            s_tx_queue_len = 0;
+            rlr::led::on();
+        }
+    }
 }
 
 }} // namespace rlr::kiss

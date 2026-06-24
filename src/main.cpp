@@ -20,8 +20,12 @@
   #define RLR_VERSION "0.1.0-dev"
 #endif
 
-// RX buffer for radio packets (must fit reassembled split packets)
-static uint8_t rx_buf[512];
+// Delivered from rlr::radio::poll() when a complete Reticulum packet arrives.
+static void on_radio_rx(const uint8_t* buf, size_t len, float rssi, float snr) {
+    rlr::led::on();
+    rlr::kiss::send_rx_packet(buf, len, rssi, snr);
+    rlr::led::off();
+}
 
 void setup() {
     Serial.begin(115200);
@@ -59,6 +63,7 @@ void setup() {
     if (!rlr::radio::init_hardware()) {
         Serial.println("Setup: radio::init_hardware() failed");
     }
+    rlr::radio::set_rx_callback(on_radio_rx);
 
     // Initialize KISS processor
     rlr::kiss::init();
@@ -70,20 +75,13 @@ void loop() {
     // Process incoming KISS frames from host
     rlr::kiss::tick();
 
-    // Drain queued TX packet
-    rlr::kiss::drain_tx_queue();
+    // Drive the non-blocking radio state machine (services TX completion and
+    // delivers RX packets via on_radio_rx) — never busy-waits on airtime, so
+    // BLE keeps being serviced during transmissions.
+    rlr::radio::poll();
 
-    // Check for radio RX packets and send to host
-    if (rlr::radio::rx_pending()) {
-        int n = rlr::radio::read_pending(rx_buf, sizeof(rx_buf));
-        if (n > 0) {
-            rlr::led::on();
-            rlr::kiss::send_rx_packet((const uint8_t*)rx_buf, n,
-                                      rlr::radio::last_rssi(),
-                                      rlr::radio::last_snr());
-            rlr::led::off();
-        }
-    }
+    // Finalize completed TX (CMD_READY + airtime) and start any queued packet.
+    rlr::kiss::tx_service();
 
     // Heartbeat LED
     static rlr::Config s_minimal_cfg = { 0, 0, 0, 0, 0, rlr::CONFIG_FLAG_HEARTBEAT };

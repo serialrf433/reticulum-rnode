@@ -109,6 +109,8 @@ void send_byte(uint8_t cmd, uint8_t value);
 void send_rx_packet(const uint8_t* data, size_t len, float rssi, float snr);
 
 // Drain queued TX packet (if any). Call from loop().
-void drain_tx_queue();
+// Finalize a completed async radio TX and start any queued packet.
+// Call from loop() after rlr::radio::poll().
+void tx_service();
 
 }} // namespace rlr::kiss
