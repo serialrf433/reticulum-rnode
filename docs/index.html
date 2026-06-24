@@ -255,8 +255,10 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.9-1/core.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.9-1/md5.min.js"></script>
-<script src="dfu.js"></script>
-<script src="js/rnode.js"></script>
+<!-- ?v= cache-buster: bump on any dfu.js / rnode.js change so browsers
+     never pair a new index.html with a stale cached script. -->
+<script src="dfu.js?v=0.4.0"></script>
+<script src="js/rnode.js?v=0.4.0"></script>
 <script>
 'use strict';
 
