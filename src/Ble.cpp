@@ -220,6 +220,10 @@ bool connected() {
     return s_connected;
 }
 
+const char* device_name() {
+    return s_devname;
+}
+
 int available() {
     return s_ble_uart.available();
 }
@@ -251,6 +255,7 @@ void flush() {
 namespace rlr { namespace ble {
 void init(const char*) {}
 bool connected() { return false; }
+const char* device_name() { return ""; }
 int available() { return 0; }
 int read() { return -1; }
 size_t write(const uint8_t*, size_t) { return 0; }

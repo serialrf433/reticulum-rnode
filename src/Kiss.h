@@ -61,6 +61,7 @@ constexpr uint8_t CMD_HASHES      = 0x60;
 constexpr uint8_t CMD_FW_UPD      = 0x61;
 constexpr uint8_t CMD_CFG_READ    = 0x6D;
 constexpr uint8_t CMD_BLE_PIN     = 0x70;  // Read/write BLE pairing PIN
+constexpr uint8_t CMD_BLE_NAME    = 0x71;  // Read advertised BLE device name
 
 constexpr uint8_t CMD_ERROR       = 0x90;
 

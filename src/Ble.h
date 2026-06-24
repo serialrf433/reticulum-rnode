@@ -19,6 +19,10 @@ void init(const char* device_name);
 // Returns true if a BLE central is connected and NUS notify is enabled.
 bool connected();
 
+// Returns the advertised BLE device name ("RNode XXXX"). Returns an
+// empty string on builds without BLE. Valid after init().
+const char* device_name();
+
 // Returns the number of bytes available to read from BLE UART.
 int available();
 

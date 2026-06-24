@@ -721,6 +721,15 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
         }
         break;
 
+    case CMD_BLE_NAME:
+        // Report the advertised BLE device name ("RNode XXXX") so the
+        // host/webflasher can tell the user which BLE device to pair with.
+        {
+            const char* name = rlr::ble::device_name();
+            send_frame(CMD_BLE_NAME, (const uint8_t*)name, strlen(name));
+        }
+        break;
+
     case CMD_LEAVE:
         // Host disconnecting — nothing to do
         break;

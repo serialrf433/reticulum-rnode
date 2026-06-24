@@ -48,6 +48,7 @@ const CMD_HASHES      = 0x60;
 const CMD_FW_UPD      = 0x61;
 const CMD_CFG_READ    = 0x6D;
 const CMD_BLE_PIN     = 0x70;
+const CMD_BLE_NAME    = 0x71;
 const CMD_ERROR       = 0x90;
 
 // Detect handshake
@@ -336,6 +337,19 @@ class RNode {
     async getTxPower() {
         const resp = await this._sendAndWait(CMD_TXPOWER, new Uint8Array([0xFF]));
         return resp.length >= 1 ? resp[0] : null;
+    }
+
+    // Read the advertised BLE device name ("RNode XXXX"). Returns null on
+    // older firmware that doesn't implement CMD_BLE_NAME (short timeout so
+    // the connect flow doesn't stall), or on a BLE-less build (empty reply).
+    async getBleName() {
+        try {
+            const resp = await this._sendAndWait(CMD_BLE_NAME, new Uint8Array([0x00]), CMD_BLE_NAME, 1500);
+            if (!resp || resp.length === 0) return null;
+            return new TextDecoder().decode(resp);
+        } catch (e) {
+            return null;
+        }
     }
 
     // Read the current BLE pairing PIN (returns 6-char ASCII string).

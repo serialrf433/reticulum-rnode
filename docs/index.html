@@ -257,8 +257,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.9-1/md5.min.js"></script>
 <!-- ?v= cache-buster: bump on any dfu.js / rnode.js change so browsers
      never pair a new index.html with a stale cached script. -->
-<script src="dfu.js?v=0.4.0"></script>
-<script src="js/rnode.js?v=0.4.0"></script>
+<script src="dfu.js?v=0.4.1"></script>
+<script src="js/rnode.js?v=0.4.1"></script>
 <script>
 'use strict';
 
@@ -525,16 +525,22 @@ $('btn-connect').addEventListener('click', async () => {
     const platform = await rnode.getPlatform();
     const board = await rnode.getBoard();
     const battery = await rnode.getBattery();
+    const bleName = await rnode.getBleName();
     const boardInfo = BOARDS[board] || { name: 'Unknown (0x' + (board||0).toString(16) + ')' };
 
     const dl = $('device-info');
     dl.innerHTML = '';
-    for (const [k, v] of [
+    const rows = [
       ['Board', boardInfo.name],
       ['Firmware', fw ? `${fw.major}.${fw.minor}` : 'unknown'],
       ['Platform', platform === 0x70 ? 'nRF52' : '0x'+(platform||0).toString(16)],
       ['Battery', battery !== null ? battery + '%' : 'N/A'],
-    ]) { dl.innerHTML += `<dt>${k}</dt><dd>${v}</dd>`; }
+    ];
+    // BLE advertising name — what to look for when pairing from a phone.
+    // Only shown when the firmware reports it (CMD_BLE_NAME, fw ≥ 0.4.1).
+    if (bleName) rows.push(['BLE Name', bleName]);
+    for (const [k, v] of rows) { dl.innerHTML += `<dt>${k}</dt><dd>${v}</dd>`; }
+    if (bleName) log('info', `BLE pairing name: ${bleName}`);
 
     if (board) {
       const sel = $('prov-board');
