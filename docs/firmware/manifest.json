@@ -1,6 +1,66 @@
 {
-  "generated_at": "2026-06-24T14:21:59+00:00",
+  "generated_at": "2026-06-24T14:50:08+00:00",
   "releases": [
+    {
+      "tag": "v0.4.5",
+      "prerelease": false,
+      "boards": [
+        {
+          "name": "Faketec",
+          "hex_path": "firmware/v0.4.5/reticulum-rnode-Faketec-v0.4.5.hex",
+          "hex_size": 686305,
+          "uf2_path": "firmware/v0.4.5/reticulum-rnode-Faketec-v0.4.5.uf2",
+          "uf2_size": 487936,
+          "zip_path": "firmware/v0.4.5/reticulum-rnode-Faketec-v0.4.5.zip",
+          "zip_size": 244771
+        },
+        {
+          "name": "Heltec_T114",
+          "hex_path": "firmware/v0.4.5/reticulum-rnode-Heltec_T114-v0.4.5.hex",
+          "hex_size": 685450,
+          "uf2_path": "firmware/v0.4.5/reticulum-rnode-Heltec_T114-v0.4.5.uf2",
+          "uf2_size": 487424,
+          "zip_path": "firmware/v0.4.5/reticulum-rnode-Heltec_T114-v0.4.5.zip",
+          "zip_size": 244466
+        },
+        {
+          "name": "RAK3401",
+          "hex_path": "firmware/v0.4.5/reticulum-rnode-RAK3401-v0.4.5.hex",
+          "hex_size": 685450,
+          "uf2_path": "firmware/v0.4.5/reticulum-rnode-RAK3401-v0.4.5.uf2",
+          "uf2_size": 487424,
+          "zip_path": "firmware/v0.4.5/reticulum-rnode-RAK3401-v0.4.5.zip",
+          "zip_size": 244467
+        },
+        {
+          "name": "RAK4631",
+          "hex_path": "firmware/v0.4.5/reticulum-rnode-RAK4631-v0.4.5.hex",
+          "hex_size": 685405,
+          "uf2_path": "firmware/v0.4.5/reticulum-rnode-RAK4631-v0.4.5.uf2",
+          "uf2_size": 487424,
+          "zip_path": "firmware/v0.4.5/reticulum-rnode-RAK4631-v0.4.5.zip",
+          "zip_size": 244450
+        },
+        {
+          "name": "T-Echo",
+          "hex_path": "firmware/v0.4.5/reticulum-rnode-T-Echo-v0.4.5.hex",
+          "hex_size": 685405,
+          "uf2_path": "firmware/v0.4.5/reticulum-rnode-T-Echo-v0.4.5.uf2",
+          "uf2_size": 487424,
+          "zip_path": "firmware/v0.4.5/reticulum-rnode-T-Echo-v0.4.5.zip",
+          "zip_size": 244451
+        },
+        {
+          "name": "XIAO_nRF52840",
+          "hex_path": "firmware/v0.4.5/reticulum-rnode-XIAO_nRF52840-v0.4.5.hex",
+          "hex_size": 686112,
+          "uf2_path": "firmware/v0.4.5/reticulum-rnode-XIAO_nRF52840-v0.4.5.uf2",
+          "uf2_size": 487936,
+          "zip_path": "firmware/v0.4.5/reticulum-rnode-XIAO_nRF52840-v0.4.5.zip",
+          "zip_size": 244707
+        }
+      ]
+    },
     {
       "tag": "v0.4.4",
       "prerelease": false,
