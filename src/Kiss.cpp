@@ -270,6 +270,12 @@ static void emit_alock() {
 // Periodic housekeeping: sample the channel for the load/noise figures
 // and emit CMD_STAT_CHTM on a fixed cadence. Called from tick().
 static void status_tick() {
+    // DISABLED pending BLE-coexistence investigation. This polled the SX1262
+    // over SPI every 100 ms while BLE was connected — the one thing that began
+    // exactly when the radio turned on (matching the link-drop symptom), and
+    // exactly the kind of ungated radio polling Meshtastic deliberately avoids.
+    return;
+
     if (!s_radio_on) return;
     uint32_t now = millis();
 
@@ -546,11 +552,7 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
                     rlr::radio::start_rx();
                     s_radio_on = true;
                     send_byte(CMD_RADIO_STATE, 0x01);
-                    // Report physical params and airtime limits now that
-                    // the radio is operational (SPEC.md §8.4.5 / §8.5).
-                    emit_phyprm();
-                    emit_csma();
-                    emit_alock();
+                    // Telemetry burst disabled pending BLE-coexistence fix.
                     uint32_t now = millis();
                     s_last_status_ms = now;
                     s_last_sample_ms = now;
