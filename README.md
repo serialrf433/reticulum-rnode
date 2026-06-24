@@ -122,6 +122,9 @@ It's also deployed via GitHub Pages at the repo's Pages URL (Settings > Pages > 
 - Full RNode KISS protocol (CMD_DETECT, CMD_FW_VERSION, CMD_PLATFORM, radio config, CMD_DATA)
 - Split-packet support for payloads > 254 bytes (RNode-compatible two-frame reassembly)
 - CSMA/CA with carrier-sense before transmit
+- Airtime accounting with host-configurable short/long caps (CMD_ST_ALOCK / CMD_LT_ALOCK) — TX is held when over budget
+- Channel-time, physical-layer, and CSMA telemetry (CMD_STAT_CHTM / CMD_STAT_PHYPRM / CMD_STAT_CSMA)
+- Radio config lock (CMD_RADIO_LOCK) and implicit-header toggle (CMD_IMPLICIT)
 - Radio config persistence (CMD_CONF_SAVE/DELETE)
 - Battery voltage reporting (CMD_STAT_BAT)
 - BLE transport with configurable pairing PIN (default `123456`, change via webflasher or CMD_BLE_PIN)

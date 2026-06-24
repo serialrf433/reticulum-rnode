@@ -86,12 +86,13 @@
 <div class="panel">
   <h2>Flash firmware</h2>
   <p style="margin: 0 0 12px 0; color: var(--muted); font-size: 13px;">
-    Pick a version below and click <strong>Select firmware</strong>.
-    Then put the board in bootloader mode by
-    <strong>double-tapping the reset button</strong>
-    (within ~500&nbsp;ms) &mdash; the device will re-enumerate as a new
-    USB serial port. Click <strong>Flash</strong> and pick that new
-    port in the browser's picker.
+    Pick a version below and click <strong>Select firmware</strong>, then
+    click <strong>Flash</strong> and choose your board's serial port. The
+    flasher reboots the board into its bootloader automatically (a
+    1200-baud touch) &mdash; no double-tap needed. If the board is already
+    in its bootloader (e.g. a fresh board, or after a double-tap), tick
+    the box below to skip the auto-reboot. If auto-flash fails, use the
+    <strong>UF2</strong> fallback.
   </p>
   <div class="row">
     <div class="field"><label>Version</label>
@@ -113,13 +114,22 @@
   </details>
 
   <div id="fw-info" class="stage-label" style="margin-top: 14px;">no firmware loaded</div>
+  <label class="row" style="margin: 10px 0 0 0; font-size: 13px; color: var(--muted);">
+    <input type="checkbox" id="boot-already" style="width:auto; margin-right:8px;">
+    Board is already in its bootloader (skip step ① and flash directly)
+  </label>
   <div class="actions">
-    <button id="btn-flash" disabled>Flash (DFU)</button>
+    <button id="btn-dfu-reboot" disabled>① Reboot to bootloader</button>
+    <button id="btn-flash" disabled>② Select bootloader port &amp; flash</button>
     <button id="btn-download-uf2" class="secondary" disabled>Download UF2</button>
-    <span style="color: var(--muted); font-size: 12px; align-self: center;">
-      DFU: double-tap reset, pick bootloader port. UF2: double-tap reset, drag file to NICENANO/XIAOBOOT drive.
-    </span>
   </div>
+  <p style="margin: 8px 0 0 0; color: var(--muted); font-size: 12px;">
+    Click <strong>①</strong> and pick the port your board currently uses — it reboots into
+    the bootloader and re-enumerates as a <em>new</em> serial port. Then click
+    <strong>②</strong> and pick that new bootloader port to flash. (Already in the
+    bootloader? Tick the box and go straight to ②.) If DFU fails, use the UF2 fallback:
+    double-tap reset, drag the .uf2 to the NICENANO/XIAOBOOT drive.
+  </p>
   <div class="progress"><div id="fw-progress-bar"></div></div>
   <div id="fw-stage" class="stage-label"></div>
 </div>
@@ -275,6 +285,8 @@ const btnFlash = $('btn-flash');
 const btnUf2   = $('btn-download-uf2');
 const fwBar   = $('fw-progress-bar');
 const fwStage = $('fw-stage');
+const bootChk = $('boot-already');
+const btnReboot = $('btn-dfu-reboot');
 const relVersion     = $('rel-version');
 const relBoard       = $('rel-board');
 const relStatus      = $('rel-status');
@@ -288,11 +300,13 @@ function setLoadedPackage(pkg, label) {
   if (pkg) {
     fwInfo.textContent = `${label} — app ${pkg.firmware.length} B, init ${pkg.initPacket.length} B`;
     btnFlash.disabled = false;
+    if (btnReboot) btnReboot.disabled = false;
     if (btnUf2) btnUf2.disabled = !currentUf2Path;
     log('info', `package loaded (${label}): app=${pkg.firmware.length} bytes`);
   } else {
     fwInfo.textContent = 'no firmware loaded';
     btnFlash.disabled = true;
+    if (btnReboot) btnReboot.disabled = true;
     if (btnUf2) btnUf2.disabled = true;
   }
 }
@@ -429,29 +443,57 @@ fetchReleases();
 // ---------------------------------------------------------------
 //  Flash button — DFU over Web Serial
 // ---------------------------------------------------------------
+// Step \u2460: pick the running app's port and 1200-baud touch it into the
+// bootloader. The board re-enumerates as a NEW serial port, so we cannot
+// reuse this handle \u2014 the user picks the bootloader port in step \u2461, which
+// also supplies the fresh user gesture requestPort() requires.
+if (btnReboot) {
+  btnReboot.addEventListener('click', async () => {
+    if (!selectedPackage) return;
+    btnReboot.disabled = true;
+    try {
+      log('info', 'Select your board\u2019s CURRENT serial port (the running app)');
+      const port = await navigator.serial.requestPort();
+      fwStage.textContent = 'Rebooting into bootloader (1200-baud touch)\u2026';
+      log('info', '1200-baud touch \u2014 rebooting into bootloader');
+      await RLRDfu.dfuTouch(port);
+      fwStage.textContent = 'Rebooted \u2014 now click \u2461 and pick the NEW bootloader port.';
+      log('ok', 'Touched. The board re-enumerated as a new port \u2014 click \u2461 to flash it.');
+    } catch (e) {
+      fwStage.textContent = 'Reboot step failed: ' + e.message;
+      log('err', 'Reboot to bootloader failed: ' + e.message);
+    } finally {
+      btnReboot.disabled = !selectedPackage;
+    }
+  });
+}
+
+// Step \u2461: fresh user gesture \u2192 pick the bootloader port \u2192 DFU. dfuFlash
+// owns the 115200 open/close lifecycle.
 btnFlash.addEventListener('click', async () => {
   if (!selectedPackage) return;
   btnFlash.disabled = true;
+  if (btnReboot) btnReboot.disabled = true;
   fwBar.style.width = '0%';
   fwStage.textContent = '';
   try {
-    log('info', 'Select the bootloader serial port (double-tap reset first)');
+    log('info', 'Select the BOOTLOADER serial port (often a different port than the app)');
     const port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 });
     await RLRDfu.dfuFlash(port, selectedPackage, {
       onStage: (msg) => { fwStage.textContent = msg; log('info', msg); },
       onProgress: (sent, total) => { fwBar.style.width = Math.floor(100 * sent / total) + '%'; },
       log: (cls, msg) => log(cls, msg),
     });
-    await port.close();
     fwBar.style.width = '100%';
     fwStage.textContent = 'Flash complete \u2014 device is rebooting.';
     log('ok', 'Flash complete!');
   } catch (e) {
-    fwStage.textContent = 'Flash failed: ' + e.message;
+    fwStage.textContent = 'Flash failed: ' + e.message + ' \u2014 try the UF2 fallback.';
     log('err', 'Flash failed: ' + e.message);
+    log('info', 'If DFU keeps failing: click Download UF2, double-tap reset, and drag the .uf2 onto the bootloader drive.');
   } finally {
     btnFlash.disabled = !selectedPackage;
+    if (btnReboot) btnReboot.disabled = !selectedPackage;
   }
 });
 

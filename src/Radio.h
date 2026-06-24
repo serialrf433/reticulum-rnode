@@ -59,6 +59,11 @@ float read_rssi();
 // Uses CSMA_RSSI_THRESHOLD_DBM as the decision threshold.
 bool channel_clear();
 
+// CSMA contention-window descriptor reported to the host via
+// CMD_STAT_CSMA (diagnostic, SPEC.md §8.5): the backoff band and the
+// min/max contention-window bounds this driver uses.
+void csma_params(uint8_t& cw_band, uint8_t& cw_min, uint8_t& cw_max);
+
 // Synchronously transmit a packet with CSMA/CA. Performs carrier sense
 // before transmitting: if the channel is busy, backs off with random
 // delay and retries up to CSMA_MAX_RETRIES times. Returns the number

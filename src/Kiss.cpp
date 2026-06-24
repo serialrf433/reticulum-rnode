@@ -6,7 +6,10 @@
 #include "Eeprom.h"
 #include "Battery.h"
 #include "Ble.h"
+#include "Airtime.h"
+#include "KissCodec.h"
 #include <Arduino.h>
+#include <math.h>
 #include <nrf_soc.h>
 #include <InternalFileSystem.h>
 
@@ -34,6 +37,40 @@ static uint8_t  s_sf        = 0;
 static uint8_t  s_cr        = 0;
 static int8_t   s_txp_dbm   = 0;
 static bool     s_radio_on  = false;
+
+// Radio config lock (CMD_RADIO_LOCK) and implicit-header mode
+// (CMD_IMPLICIT). When locked, radio parameter changes are refused.
+static bool s_radio_locked = false;
+static bool s_implicit     = false;
+
+// LoRa preamble length actually programmed by Radio.cpp; used for the
+// airtime and PHYPRM timing math so the reported figures match the air.
+static constexpr uint16_t PREAMBLE_SYMBOLS = 16;
+
+// Airtime limits (CMD_ST_ALOCK / CMD_LT_ALOCK), as a percentage of the
+// respective window. 0 = no limit (default — host only sends these when
+// the operator has configured an airtime cap).
+static double s_st_alock_pct = 0.0;
+static double s_lt_alock_pct = 0.0;
+
+// Rolling airtime/channel accounting (SPEC.md §8.5). s_tx_airtime is our
+// own transmit occupancy (drives the ALOCK caps); s_channel_busy adds
+// carrier-sense-detected traffic for the CMD_STAT_CHTM channel-load
+// figures.
+static rlr::airtime::UtilTracker s_tx_airtime;
+static rlr::airtime::UtilTracker s_channel_busy;
+
+// Channel RSSI / noise-floor estimates sampled while the radio is idle.
+static int   s_current_rssi = -157;
+static int   s_noise_floor  = -157;
+static float s_nf_min       = 0.0f;
+static bool  s_nf_seeded    = false;
+
+// Periodic status-emission / channel-sampling timers.
+static uint32_t s_last_status_ms = 0;
+static uint32_t s_last_sample_ms = 0;
+static constexpr uint32_t STATUS_INTERVAL_MS = 2000;
+static constexpr uint32_t SAMPLE_INTERVAL_MS = 100;
 
 // Firmware version (must be >= 1.52 for Reticulum host)
 static constexpr uint8_t FW_MAJ = 1;
@@ -103,17 +140,9 @@ static void _send_frame_on(uint8_t cmd, const uint8_t* data, size_t len, Transpo
     size_t pos = 0;
     s_kiss_tx_buf[pos++] = FEND;
     s_kiss_tx_buf[pos++] = cmd;
-    for (size_t i = 0; i < len && pos < KISS_TX_BUF_SIZE - 2; i++) {
-        if (data[i] == FEND) {
-            s_kiss_tx_buf[pos++] = FESC;
-            s_kiss_tx_buf[pos++] = TFEND;
-        } else if (data[i] == FESC) {
-            s_kiss_tx_buf[pos++] = FESC;
-            s_kiss_tx_buf[pos++] = TFESC;
-        } else {
-            s_kiss_tx_buf[pos++] = data[i];
-        }
-    }
+    // Escape the payload with the shared, unit-tested KISS codec. Reserve
+    // one byte for the trailing FEND.
+    pos += rlr::kisscodec::escape(data, len, s_kiss_tx_buf + pos, KISS_TX_BUF_SIZE - pos - 1);
     s_kiss_tx_buf[pos++] = FEND;
     _write_buf(s_kiss_tx_buf, pos, t);
     // Flush BLE TXD buffer at end of each KISS frame so the
@@ -169,6 +198,96 @@ static void apply_radio_config() {
     cfg.flags   = 0;
 
     rlr::radio::begin(cfg);
+}
+
+// ---- Airtime accounting & status emission (SPEC.md §8.4.5 / §8.5) --
+
+// True if a configured airtime cap is currently exceeded, in which case
+// the firmware must refuse to transmit (reporting ERROR_QUEUE_FULL).
+static bool airtime_cap_blocks_tx() {
+    uint32_t now = millis();
+    if (s_st_alock_pct > 0.0 && s_tx_airtime.short_util(now) * 100.0 >= s_st_alock_pct) return true;
+    if (s_lt_alock_pct > 0.0 && s_tx_airtime.long_util(now)  * 100.0 >= s_lt_alock_pct) return true;
+    return false;
+}
+
+// Account the on-air time of a packet we just transmitted.
+static void record_tx_airtime(size_t payload_len) {
+    if (s_bw_hz == 0 || s_sf == 0 || s_cr == 0) return;
+    uint32_t at = rlr::airtime::rnode_packet_airtime_ms(s_bw_hz, s_sf, s_cr,
+                                                        PREAMBLE_SYMBOLS, payload_len);
+    uint32_t now = millis();
+    s_tx_airtime.record(now, at);
+    s_channel_busy.record(now, at);  // our own TX occupies the channel too
+}
+
+// CMD_STAT_PHYPRM (0x26): report the current physical-layer timing.
+static void emit_phyprm() {
+    if (s_bw_hz == 0 || s_sf == 0) return;
+    double tsym = rlr::airtime::symbol_time_ms(s_bw_hz, s_sf);
+    uint16_t slot = (uint16_t)ceil(tsym);
+    if (slot < 1) slot = 1;
+    uint16_t difs = (uint16_t)(slot * 2 + 1);
+    uint8_t buf[12];
+    rlr::airtime::build_phyprm(buf, s_bw_hz, s_sf, PREAMBLE_SYMBOLS, slot, difs);
+    send_frame(CMD_STAT_PHYPRM, buf, sizeof(buf));
+}
+
+// CMD_STAT_CHTM (0x25): report channel-time / airtime metrics.
+static void emit_chtm() {
+    uint32_t now = millis();
+    uint8_t buf[11];
+    rlr::airtime::build_chtm(buf,
+        s_tx_airtime.short_util(now), s_tx_airtime.long_util(now),
+        s_channel_busy.short_util(now), s_channel_busy.long_util(now),
+        s_current_rssi, s_noise_floor, 0xFF);
+    send_frame(CMD_STAT_CHTM, buf, sizeof(buf));
+}
+
+// CMD_STAT_CSMA (0x28): report the CSMA contention-window descriptor.
+static void emit_csma() {
+    uint8_t band, cw_min, cw_max;
+    rlr::radio::csma_params(band, cw_min, cw_max);
+    uint8_t buf[3];
+    rlr::airtime::build_csma(buf, band, cw_min, cw_max);
+    send_frame(CMD_STAT_CSMA, buf, sizeof(buf));
+}
+
+// Echo both airtime-limit settings back to the host (host caches them
+// from the reply frames).
+static void emit_alock() {
+    uint8_t b[2];
+    uint16_t st = rlr::airtime::encode_alock(s_st_alock_pct);
+    b[0] = st >> 8; b[1] = st & 0xFF;
+    send_frame(CMD_ST_ALOCK, b, 2);
+    uint16_t lt = rlr::airtime::encode_alock(s_lt_alock_pct);
+    b[0] = lt >> 8; b[1] = lt & 0xFF;
+    send_frame(CMD_LT_ALOCK, b, 2);
+}
+
+// Periodic housekeeping: sample the channel for the load/noise figures
+// and emit CMD_STAT_CHTM on a fixed cadence. Called from tick().
+static void status_tick() {
+    if (!s_radio_on) return;
+    uint32_t now = millis();
+
+    if (!s_tx_busy && (now - s_last_sample_ms) >= SAMPLE_INTERVAL_MS) {
+        uint32_t dt = now - s_last_sample_ms;
+        s_last_sample_ms = now;
+        float rssi = rlr::radio::read_rssi();
+        s_current_rssi = (int)rssi;
+        if (!s_nf_seeded || rssi < s_nf_min) { s_nf_min = rssi; s_nf_seeded = true; }
+        if (!rlr::radio::channel_clear()) {
+            s_channel_busy.record(now, dt);   // channel sensed busy this slot
+        }
+    }
+
+    if ((now - s_last_status_ms) >= STATUS_INTERVAL_MS) {
+        s_last_status_ms = now;
+        s_noise_floor = s_nf_seeded ? (int)s_nf_min : s_current_rssi;
+        s_nf_min = (float)s_current_rssi;   // reset window minimum
+        emit_chtm();
+    }
 }
 
 // ---- Config persistence ------------------------------------------
@@ -242,6 +361,12 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
     case CMD_DATA:
         // TX packet via radio
         if (s_radio_on && len > 0) {
+            // Airtime cap (CMD_ST_ALOCK/CMD_LT_ALOCK) — refuse to transmit
+            // while over budget and report backpressure (SPEC.md §8.5.1).
+            if (airtime_cap_blocks_tx()) {
+                send_byte(CMD_ERROR, ERROR_QUEUE_FULL);
+                break;
+            }
             if (s_tx_busy) {
                 // Radio is busy — queue the packet if the slot is free
                 if (s_tx_queue_len == 0 && len <= TX_QUEUE_SIZE) {
@@ -258,6 +383,7 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
                 s_tx_busy = false;
                 if (n > 0) {
                     s_tx_count++;
+                    record_tx_airtime(len);
                 } else {
                     send_byte(CMD_ERROR, ERROR_TXFAILED);
                 }
@@ -304,7 +430,7 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
         break;
 
     case CMD_FREQUENCY:
-        if (len == 4) {
+        if (len == 4 && !s_radio_locked) {
             s_freq_hz = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
                         ((uint32_t)data[2] << 8)  | (uint32_t)data[3];
             send_uint32(CMD_FREQUENCY, s_freq_hz);
@@ -314,7 +440,7 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
         break;
 
     case CMD_BANDWIDTH:
-        if (len == 4) {
+        if (len == 4 && !s_radio_locked) {
             s_bw_hz = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
                       ((uint32_t)data[2] << 8)  | (uint32_t)data[3];
             send_uint32(CMD_BANDWIDTH, s_bw_hz);
@@ -324,7 +450,7 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
         break;
 
     case CMD_TXPOWER:
-        if (len == 1 && data[0] != 0xFF) {
+        if (len == 1 && data[0] != 0xFF && !s_radio_locked) {
             s_txp_dbm = (int8_t)data[0];
             send_byte(CMD_TXPOWER, (uint8_t)s_txp_dbm);
         } else if (len >= 1 && data[0] == 0xFF) {
@@ -333,7 +459,7 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
         break;
 
     case CMD_SF:
-        if (len == 1 && data[0] != 0xFF) {
+        if (len == 1 && data[0] != 0xFF && !s_radio_locked) {
             s_sf = data[0];
             send_byte(CMD_SF, s_sf);
         } else if (len >= 1 && data[0] == 0xFF) {
@@ -342,12 +468,62 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
         break;
 
     case CMD_CR:
-        if (len == 1 && data[0] != 0xFF) {
+        if (len == 1 && data[0] != 0xFF && !s_radio_locked) {
             s_cr = data[0];
             send_byte(CMD_CR, s_cr);
         } else if (len >= 1 && data[0] == 0xFF) {
             send_byte(CMD_CR, s_cr);
         }
+        break;
+
+    case CMD_RADIO_LOCK:
+        // Lock/unlock radio config (SPEC.md §8.4.1). Non-zero = locked.
+        if (len >= 1) {
+            s_radio_locked = (data[0] != 0x00);
+            send_byte(CMD_RADIO_LOCK, s_radio_locked ? 0x01 : 0x00);
+        }
+        break;
+
+    case CMD_IMPLICIT:
+        // Toggle implicit-header LoRa mode (advanced). Stored and echoed;
+        // peers in this mesh use explicit headers.
+        if (len >= 1) {
+            s_implicit = (data[0] != 0x00);
+            send_byte(CMD_IMPLICIT, s_implicit ? 0x01 : 0x00);
+        }
+        break;
+
+    case CMD_ST_ALOCK:
+        // Short-term airtime limit: uint16 BE of (percent * 100).
+        if (len == 2) {
+            uint16_t raw = ((uint16_t)data[0] << 8) | data[1];
+            s_st_alock_pct = rlr::airtime::decode_alock(raw);
+            send_frame(CMD_ST_ALOCK, data, 2);   // echo back
+        }
+        break;
+
+    case CMD_LT_ALOCK:
+        // Long-term airtime limit: same encoding as ST_ALOCK.
+        if (len == 2) {
+            uint16_t raw = ((uint16_t)data[0] << 8) | data[1];
+            s_lt_alock_pct = rlr::airtime::decode_alock(raw);
+            send_frame(CMD_LT_ALOCK, data, 2);   // echo back
+        }
+        break;
+
+    case CMD_STAT_PHYPRM:
+        // Report physical-layer timing parameters on request.
+        emit_phyprm();
+        break;
+
+    case CMD_STAT_CHTM:
+        // Report channel-time / airtime metrics on request.
+        emit_chtm();
+        break;
+
+    case CMD_STAT_CSMA:
+        // Report the CSMA contention-window descriptor on request.
+        emit_csma();
         break;
 
     case CMD_RADIO_STATE:
@@ -359,6 +535,14 @@ static void dispatch_frame(uint8_t cmd, const uint8_t* data, size_t len) {
                     rlr::radio::start_rx();
                     s_radio_on = true;
                     send_byte(CMD_RADIO_STATE, 0x01);
+                    // Report physical params and airtime limits now that
+                    // the radio is operational (SPEC.md §8.4.5 / §8.5).
+                    emit_phyprm();
+                    emit_csma();
+                    emit_alock();
+                    uint32_t now = millis();
+                    s_last_status_ms = now;
+                    s_last_sample_ms = now;
                 } else {
                     send_byte(CMD_ERROR, ERROR_INITRADIO);
                 }
@@ -639,20 +823,27 @@ void tick() {
             }
         }
     }
+
+    // Periodic channel sampling + CMD_STAT_CHTM emission.
+    status_tick();
 }
 
 void drain_tx_queue() {
     if (s_tx_queue_len == 0 || s_tx_busy || !s_radio_on) return;
+    // Hold the queued packet while over the airtime budget (backpressure).
+    if (airtime_cap_blocks_tx()) return;
 
+    size_t len = s_tx_queue_len;
     s_tx_busy = true;
     rlr::led::on();
-    int n = rlr::radio::transmit(s_tx_queue, s_tx_queue_len);
+    int n = rlr::radio::transmit(s_tx_queue, len);
     rlr::led::off();
     s_tx_busy = false;
     s_tx_queue_len = 0;
 
     if (n > 0) {
         s_tx_count++;
+        record_tx_airtime(len);
     } else {
         send_byte(CMD_ERROR, ERROR_TXFAILED);
     }

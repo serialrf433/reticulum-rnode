@@ -43,8 +43,13 @@ from pathlib import Path
 REPO_ROOT     = Path(__file__).resolve().parents[1]
 FIRMWARE_ROOT = REPO_ROOT / "docs" / "firmware"
 MANIFEST_PATH = FIRMWARE_ROOT / "manifest.json"
+# Board names may contain hyphens (e.g. "T-Echo"), so match the board
+# greedily and anchor the tag on a version-shaped suffix (vMAJOR.MINOR.PATCH
+# with an optional prerelease). A non-version-shaped tail won't be mistaken
+# for the tag.
 ASSET_RE      = re.compile(
-    r"^reticulum-rnode-(?P<board>[^-]+)-(?P<tag>v.+)\.(?P<ext>zip|hex|uf2)$"
+    r"^reticulum-rnode-(?P<board>.+)-"
+    r"(?P<tag>v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\.(?P<ext>zip|hex|uf2)$"
 )
 
 

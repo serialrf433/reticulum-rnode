@@ -339,6 +339,15 @@ bool channel_clear() {
     return read_rssi() < CSMA_RSSI_THRESHOLD_DBM;
 }
 
+void csma_params(uint8_t& cw_band, uint8_t& cw_min, uint8_t& cw_max) {
+    // This driver uses a single-band random backoff of up to
+    // CSMA_MAX_RETRIES slots (no airtime-banded contention window), so we
+    // report band 1 with a 0..CSMA_MAX_RETRIES window.
+    cw_band = 1;
+    cw_min  = 0;
+    cw_max  = (uint8_t)CSMA_MAX_RETRIES;
+}
+
 // Internal: force standby with recovery if SPI fails
 static void _ensure_standby() {
     int state = s_radio.standby();

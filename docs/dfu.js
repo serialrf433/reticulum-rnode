@@ -143,7 +143,10 @@ const DFU_UPDATE_MODE_APP  = 4;
 const FLASH_PAGE_SIZE        = 4096;
 const FLASH_PAGE_ERASE_MS    = 89.7;
 const DFU_PACKET_MAX_SIZE    = 512;
-const ACK_TIMEOUT_MS         = 1000;
+// Generous, non-fatal ack window. The Adafruit/Nordic legacy bootloader
+// is inconsistent about ack timing, so we pace on the ack but never abort
+// the flash on a miss — matching adafruit-nrfutil's lenient transport.
+const ACK_TIMEOUT_MS         = 2500;
 
 class DfuTransport {
   constructor(port, logFn) {
@@ -208,36 +211,30 @@ class DfuTransport {
     });
   }
 
+  // Drain one ack — a frame bounded by two FEND (0xC0) bytes — or time
+  // out. Returns true if a frame boundary was seen, false on timeout.
+  // Deliberately lenient: it does NOT unescape or verify the ack body and
+  // NEVER throws, because the bootloader's ack framing/timing varies and
+  // strict verification is the classic cause of mid-flash DFU failures.
   async readAck(timeoutMs = ACK_TIMEOUT_MS) {
     const deadline = Date.now() + timeoutMs;
-    while (true) {
-      const b = await this._readByte(deadline);
-      if (b === 0xC0) break;
+    let fends = 0;
+    try {
+      while (Date.now() < deadline) {
+        const b = await this._readByte(deadline);
+        if (b === 0xC0 && ++fends >= 2) return true;
+      }
+    } catch (e) {
+      // per-byte timeout — fall through and report the miss
     }
-    const raw = [];
-    while (true) {
-      const b = await this._readByte(deadline);
-      if (b === 0xC0) break;
-      raw.push(b);
-    }
-    if (raw.length === 0) {
-      return this.readAck(Math.max(50, deadline - Date.now()));
-    }
-    const body = slipUnescape(raw);
-    if (body.length < 1) throw new Error('ACK: empty body after unescape');
-    return (body[0] >> 3) & 0x07;
+    return false;
   }
 
   async sendHciPacket(payload, { expectAck = true, ackTimeoutMs = ACK_TIMEOUT_MS } = {}) {
     const frame = HciPacket.build(payload);
     await this.writer.write(frame);
-    if (expectAck) {
-      try {
-        await this.readAck(ackTimeoutMs);
-      } catch (e) {
-        throw new Error('no ack for opcode ' + payload[0] + ': ' + e.message);
-      }
-    }
+    // Pace on the ack but never abort — a missed ack is not fatal.
+    if (expectAck) await this.readAck(ackTimeoutMs);
   }
 
   async sendStartDfu(appSize) {
@@ -276,9 +273,9 @@ class DfuTransport {
       sent = Math.min(i + chunk.length, total);
       chunkIdx++;
       if (onProgress) onProgress(sent, total);
-      if (chunkIdx % 8 === 0) await sleep(1);
+      if (chunkIdx % 8 === 0) await sleep(5);
     }
-    await sleep(1);
+    await sleep(5);
   }
 
   async sendStopDataPacket() {
@@ -291,13 +288,35 @@ class DfuTransport {
 }
 
 // ---------------------------------------------------------------
-//  Top-level flash() entry point
+//  1200-baud touch — reboot a running app into its serial bootloader
+// ---------------------------------------------------------------
+// Opening the port at 1200 baud and closing it is the standard nRF52
+// (and Arduino) "auto-reset into bootloader" trigger — the firmware-side
+// equivalent of a double-tap reset. The board then re-enumerates in its
+// Adafruit bootloader on the same Web Serial grant, so the SAME `port`
+// object can be reopened at 115200 for the DFU itself. A board already in
+// the bootloader simply ignores it.
+async function dfuTouch(port) {
+  try {
+    await port.open({ baudRate: 1200 });
+    await sleep(120);
+    await port.close();
+  } catch (e) {
+    // Already in the bootloader, or the port could not be opened at 1200 —
+    // either way, fall through and let the flash attempt proceed.
+  }
+  await sleep(1600);   // give the bootloader time to re-enumerate
+}
+
+// ---------------------------------------------------------------
+//  Top-level flash() entry point — owns the 115200 port lifecycle
 // ---------------------------------------------------------------
 async function dfuFlash(port, dfuPackage, { onStage, onProgress, log } = {}) {
   const stage = onStage || (() => {});
   const logFn = log || (() => {});
 
   HciPacket.resetSequence();
+  await port.open({ baudRate: 115200 });
   const transport = new DfuTransport(port, logFn);
   try {
     await transport.open();
@@ -317,6 +336,7 @@ async function dfuFlash(port, dfuPackage, { onStage, onProgress, log } = {}) {
     stage('Done — bootloader is activating');
   } finally {
     await transport.close();
+    try { await port.close(); } catch (e) {}
   }
 }
 
@@ -324,6 +344,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 window.RLRDfu = {
   dfuFlash,
+  dfuTouch,
   DfuPackage,
   HciPacket,
   crc16,
